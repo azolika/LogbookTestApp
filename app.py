@@ -77,7 +77,7 @@ if selected_vehicle and from_date and to_date:
                 f"?version=1&from_datetime={from_iso}&to_datetime={to_iso}&limit=1000&api_key={api_key}"
             )
 
-            st.markdown(f"**API Call:** `{trips_url}`")
+            #st.markdown(f"**API Call:** `{trips_url}`")
 
             trips_response = requests.get(trips_url)
             if trips_response.status_code == 200:
