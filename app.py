@@ -18,7 +18,7 @@ st.title("Jurnal de evenimente — filtru staționare")
 # Config / Constants (comments in English)
 # ==========================================
 FM_API_BASE = "https://api.fm-track.com"
-EVENTS_BASE = "http://localhost:9877/api"
+EVENTS_BASE = "http://192.168.88.175:9877/api"
 APP_TZ = ZoneInfo("Europe/Bucharest")  # default display timezone
 
 # ==========================================
