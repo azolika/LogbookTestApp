@@ -1,169 +1,421 @@
-import streamlit as st
-import requests
-import pandas as pd
-from datetime import datetime, timedelta
 import math
+import html
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
+from typing import Any, Dict, List, Optional
 
-st.title("Vehicle Trips with Geozones")
+import pandas as pd
+import requests
+import streamlit as st
 
-# --- Sidebar: API Key, Vehicle, Date range ---
-api_key = st.sidebar.text_input("API Key", type="password")
+# ==========================================
+# App Title (UI in Romanian)
+# ==========================================
+st.title("Jurnal de evenimente — filtru staționare")
 
-from_date = st.sidebar.date_input("From")
-to_date = st.sidebar.date_input("To")
+# ==========================================
+# Config / Constants (comments in English)
+# ==========================================
+FM_API_BASE = "https://api.fm-track.com"
+EVENTS_BASE = "http://localhost:9877/api"
+APP_TZ = ZoneInfo("Europe/Bucharest")  # default display timezone
 
-# --- Fetch vehicles ---
-vehicles_list = []
-if api_key:
+# ==========================================
+# Sidebar — Romanian labels
+# ==========================================
+
+# API key (kept, used for vehicle list)
+if "api_key_cache" not in st.session_state:
+    st.session_state.api_key_cache = None
+
+api_key = st.sidebar.text_input("Cheie API", type="password")
+
+# Date range (entered in local TZ; converted to UTC for requests)
+local_today = datetime.now(APP_TZ).date()
+from_date = st.sidebar.date_input("De la", local_today)
+to_date = st.sidebar.date_input("Până la", local_today)
+
+# Stationary filter 0–99 minutes (integer only)
+stationary_under = st.sidebar.number_input(
+    "Staționare sub (minute)", min_value=0, max_value=99, step=1, value=0
+)
+
+# Optional display timezone
+user_tz_name = st.sidebar.text_input("Fus orar de afișare (IANA)", value="Europe/Bucharest")
+try:
+    display_tz = ZoneInfo(user_tz_name)
+except Exception:
+    st.sidebar.warning("Fus orar invalid. Se folosește Europe/Bucharest.")
+    display_tz = APP_TZ
+
+# Validate date range
+if to_date < from_date:
+    st.sidebar.error("Data 'Până la' nu poate fi anterioară lui 'De la'.")
+    st.stop()
+
+# ==========================================
+# Helpers (comments in English)
+# ==========================================
+
+def to_iso_z(dt: datetime) -> str:
+    """Return ISO 8601 UTC string with Z suffix."""
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def parse_iso(dt_str: Optional[str]) -> Optional[datetime]:
+    if not dt_str:
+        return None
     try:
-        vehicles_url = f"https://api.fm-track.com/objects?version=1&api_key={api_key}"
-        vehicles_response = requests.get(vehicles_url)
-        if vehicles_response.status_code == 200:
-            vehicles_list = vehicles_response.json()
-        else:
-            st.sidebar.warning(f"Vehicles API error: {vehicles_response.status_code}")
-    except Exception as e:
-        st.sidebar.error(f"Error fetching vehicles: {e}")
+        return datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+    except Exception:
+        return None
 
-vehicle_options = {v["id"]: v.get("name", v.get("id")) for v in vehicles_list}
-selected_vehicle = st.sidebar.selectbox("Select Vehicle", options=list(vehicle_options.keys()),
-                                        format_func=lambda x: vehicle_options[x])
 
-# --- Fetch geozones ---
-geozone_list = []
-if api_key:
+def fmt_dt_local(dt_str: Optional[str]) -> Optional[str]:
+    dt = parse_iso(dt_str)
+    if not dt:
+        return None
+    return dt.astimezone(display_tz).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def join_address(addr: Dict[str, Any]) -> str:
+    """Concatenate address parts similar to trips view."""
+    if not isinstance(addr, dict):
+        return ""
+    parts = [
+        addr.get("street"),
+        addr.get("house_number"),
+        addr.get("locality"),
+        # prefer region, fallback to county
+        addr.get("region") or addr.get("county"),
+        addr.get("country"),
+    ]
+    return ", ".join([p for p in parts if p])
+
+
+def safe_km(val) -> float:
+    """Convert meters (possibly None/str) to km with 3 decimals; fallback to 0.0."""
     try:
-        geozones_url = f"https://api.fm-track.com/geozones?version=1&limit=1000&api_key={api_key}"
-        geozones_response = requests.get(geozones_url)
-        if geozones_response.status_code == 200:
-            # Convert JSON text to Python list/dict
-            geozone_list = geozones_response.json()  # <-- biztosítsuk, hogy ez tényleg lista
-            if isinstance(geozone_list, dict) and "items" in geozone_list:
-                # Ha a JSON "items" kulcs alatt van a lista
-                geozone_list = geozone_list["items"]
-        else:
-            st.sidebar.warning(f"Geozones API error: {geozones_response.status_code}")
-    except Exception as e:
-        st.sidebar.error
+        return round(float(val) / 1000.0, 3)
+    except (TypeError, ValueError):
+        return 0.0
 
 
-# --- Filter POINT geozones ---
-point_geozones = [g for g in geozone_list if g.get("type") == "POINT" and g.get("circle")]
+def build_tooltip_html(row: pd.Series) -> str:
+    """Build an HTML tooltip from all row key/value pairs."""
+    parts: List[str] = []
+    for k, v in row.items():
+        key = html.escape(str(k))
+        val = "" if v is None else html.escape(str(v))
+        parts.append(f"<b>{key}</b>: {val}")
+    return "<br/>".join(parts)
+
+# ==========================================
+# Networking (comments in English)
+# ==========================================
+
+@st.cache_data(show_spinner=False, ttl=300)
+def get_session(api_key: str) -> requests.Session:
+    s = requests.Session()
+    s.params = {"version": 1, "api_key": api_key}
+    s.headers.update({"Accept": "application/json"})
+    return s
 
 
-# --- Haversine function ---
-def haversine(lat1, lon1, lat2, lon2):
-    R = 6371000
-    phi1 = math.radians(lat1)
-    phi2 = math.radians(lat2)
-    dphi = math.radians(lat2 - lat1)
-    dlambda = math.radians(lon2 - lon1)
-    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
-    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-    return R * c
-
-
-# --- Vehicle Trips Section ---
-st.subheader("Vehicle Trips")
-
-if selected_vehicle and from_date and to_date:
-    if st.button("RUN"):
+def handle_response(resp: requests.Response, context: str):
+    if resp.status_code == 200:
         try:
-            from_iso = from_date.strftime("%Y-%m-%dT00:00:00.000Z")
-            to_iso = to_date.strftime("%Y-%m-%dT23:59:00.000Z")
+            return resp.json()
+        except Exception as e:
+            st.error(f"{context}: Eroare la parsarea JSON — {e}")
+            return None
+    else:
+        st.error(f"{context}: HTTP {resp.status_code} — {resp.text[:300]}")
+        return None
 
-            trips_url = (
-                f"https://api.fm-track.com/objects/{selected_vehicle}/trips"
-                f"?version=1&from_datetime={from_iso}&to_datetime={to_iso}&limit=1000&api_key={api_key}"
+
+@st.cache_data(show_spinner=False, ttl=300)
+def fetch_vehicles(api_key: str) -> List[Dict[str, Any]]:
+    """Fetch vehicle list from FM Track using API key."""
+    if not api_key:
+        return []
+    s = get_session(api_key)
+    url = f"{FM_API_BASE}/objects"
+    resp = s.get(url)
+    data = handle_response(resp, "Eroare Vehicule API")
+    if isinstance(data, list):
+        return data
+    return data or []
+
+
+def fetch_events(vehicle_id: str, from_dt_utc: datetime, to_dt_utc: datetime, stationary_under_min: int) -> List[Dict[str, Any]]:
+    """Fetch events from local API using selected object id as vehicle_id."""
+    params = {
+        "vehicle_id": str(vehicle_id),
+        "from": to_iso_z(from_dt_utc),
+        "to": to_iso_z(to_dt_utc),
+        "stationary_under": int(stationary_under_min),
+    }
+    url = f"{EVENTS_BASE}/events"
+    resp = requests.get(url, params=params, headers={"Accept": "application/json"})
+    data = handle_response(resp, "Eroare Events API")
+    if isinstance(data, list):
+        return data
+    return data or []
+
+# ==========================================
+# Vehicle list & selection (kept)
+# ==========================================
+
+vehicles_list: List[Dict[str, Any]] = fetch_vehicles(api_key) if api_key else []
+vehicle_options = {v.get("id"): v.get("name", v.get("id")) for v in vehicles_list}
+selected_vehicle = st.sidebar.selectbox(
+    "Selectează vehicul",
+    options=list(vehicle_options.keys()) if vehicle_options else [None],
+    format_func=lambda x: vehicle_options.get(x, "Fără vehicul") if x else "Nu există vehicule",
+)
+
+# ==========================================
+# Data shaping helpers (testable) — comments in English
+# ==========================================
+
+def build_rows(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Transform raw events into table rows (Romanian headers)."""
+    rows: List[Dict[str, Any]] = []
+    for e in events:
+        loc = e.get("location", {}) or {}
+        raw_addr = (loc.get("address", {}) or {})
+        addr = join_address(raw_addr)
+
+        ev_type = (e.get("event_type") or "").upper()
+        # If event is REFUEL or DRAIN, show fuel info in the Address cell
+        if ev_type in {"REFUEL", "DRAIN"}:
+            fls = e.get("fuel_level_start")
+            fle = e.get("fuel_level_end")
+            fld = e.get("fuel_difference")
+            addr = f"{fls} | {fle} | {fld}"
+
+        row = {
+            "Tip eveniment": e.get("event_type"),
+            "Start": fmt_dt_local(e.get("event_start")),
+            "Sfârșit": fmt_dt_local(e.get("event_end")),
+            "Durată": str(timedelta(seconds=int(e.get("duration_sec", 0)))) if e.get("duration_sec") is not None else None,
+            "Lat": loc.get("latitude"),
+            "Lon": loc.get("longitude"),
+            "Adresă": addr,
+            # mileage comes in meters → convert to km with 3 decimals (robust to None)
+            "Kilometraj (pas) [km]": safe_km(e.get("mileage")),
+            "Nivel combustibil": e.get("fuel_level"),
+            "ID șofer": (e.get("driver_ids") or [None])[0],
+            "ID brut": e.get("id"),
+        }
+        rows.append(row)
+    return rows
+
+
+def sort_and_cumulate(df: pd.DataFrame) -> pd.DataFrame:
+    """Sort by Start datetime, compute cumulative mileage column, drop step column."""
+    def _sort_key(val: Optional[str]):
+        try:
+            return parse_iso(val) or datetime.min.replace(tzinfo=timezone.utc)
+        except Exception:
+            return datetime.min.replace(tzinfo=timezone.utc)
+
+    if not df.empty:
+        df.sort_values(by=["Start"], key=lambda s: s.map(_sort_key), inplace=True)
+        step_series = pd.to_numeric(df["Kilometraj (pas) [km]"], errors="coerce").fillna(0)
+        cumulative = step_series.cumsum().shift(fill_value=0)
+        df["Kilometraj (cumulativ) [km]"] = cumulative
+        df.drop(columns=["Kilometraj (pas) [km]"], inplace=True)
+    return df
+
+# ==========================================
+# RUN — Fetch events and display table
+# ==========================================
+
+st.subheader("Evenimente")
+run_clicked = st.button("RULEAZĂ", type="primary")
+
+if run_clicked:
+    if not selected_vehicle:
+        st.warning("Selectează un vehicul pentru a rula.")
+        st.stop()
+
+    # Build UTC bounds from local dates (00:00 to 23:59:00 local)
+    start_local = datetime.combine(from_date, datetime.min.time()).replace(tzinfo=display_tz)
+    end_local = datetime.combine(to_date, datetime.max.time().replace(hour=23, minute=59, second=0, microsecond=0)).replace(tzinfo=display_tz)
+
+    from_utc = start_local.astimezone(timezone.utc)
+    to_utc = end_local.astimezone(timezone.utc)
+
+    # Build API URL preview string
+    preview_url = f"{EVENTS_BASE}/events?vehicle_id={selected_vehicle}&from={to_iso_z(from_utc)}&to={to_iso_z(to_utc)}&stationary_under={stationary_under}"
+    st.markdown(f"**API Call:** `{preview_url}`")
+
+    with st.spinner("Se încarcă evenimentele..."):
+        events = fetch_events(str(selected_vehicle), from_utc, to_utc, stationary_under)
+
+    if not events:
+        st.info("Nu există evenimente în intervalul selectat.")
+        st.stop()
+
+    # Build table rows & dataframe (properly indented inside the click block)
+    rows = build_rows(events)
+    df = pd.DataFrame(rows)
+    df = sort_and_cumulate(df)
+
+    # Display table — use new Streamlit width API (no deprecation warning)
+    st.dataframe(df, height=800, width="stretch")
+
+    # Summary footer
+    total_events = len(df)
+    # Sum durations by parsing HH:MM:SS strings
+    total_seconds = 0
+    for v in df["Durată"].dropna():
+        try:
+            h, m, s = str(v).split(":")
+            total_seconds += int(h) * 3600 + int(m) * 60 + int(s)
+        except Exception:
+            pass
+
+    final_km = f"{df['Kilometraj (cumulativ) [km]'].iloc[-1]:.3f}" if not df.empty else "0.000"
+    st.caption(f"Evenimente: {total_events} · Timp total: {timedelta(seconds=total_seconds)} · Kilometraj cumulativ final: {final_km} km")
+
+    # ==============================
+    # Map — show points with tooltips
+    # ==============================
+    try:
+        import pydeck as pdk
+
+        # Filter rows with valid coordinates
+        df_map = df.copy()
+        df_map = df_map[pd.notnull(df_map["Lat"]) & pd.notnull(df_map["Lon"])]
+        df_map = df_map.astype({"Lat": float, "Lon": float})
+
+        if not df_map.empty:
+            # Pre-build tooltip HTML containing all row data
+            df_map = df_map.copy()
+            df_map["Tooltip"] = df_map.apply(build_tooltip_html, axis=1)
+
+            # Compute a reasonable initial view (centered on mean lat/lon)
+            center_lat = float(df_map["Lat"].mean())
+            center_lon = float(df_map["Lon"].mean())
+
+            # ScatterplotLayer markers
+            layer = pdk.Layer(
+                "ScatterplotLayer",
+                data=df_map,
+                get_position="[Lon, Lat]",
+                get_radius=40,              # small marker (~40m)
+                radius_min_pixels=3,        # ensure visibility when zoomed out
+                radius_max_pixels=6,
+                get_fill_color=[200, 30, 0, 160],
+                get_line_color=[255, 255, 255],
+                line_width_min_pixels=1,
+                pickable=True,
             )
 
-            #st.markdown(f"**API Call:** `{trips_url}`")
+            tooltip = {
+                "html": "{Tooltip}",
+                "style": {"backgroundColor": "#ffffff", "color": "#111", "fontSize": "12px"},
+            }
 
-            trips_response = requests.get(trips_url)
-            if trips_response.status_code == 200:
-                trips_data = trips_response.json()
-                trips_list = trips_data.get("trips", [])
+            deck = pdk.Deck(
+                layers=[layer],
+                initial_view_state=pdk.ViewState(latitude=center_lat, longitude=center_lon, zoom=9, pitch=0),
+                map_style="light",
+                tooltip=tooltip,
+            )
 
-                if trips_list:
-                    def format_duration(seconds):
-                        return str(timedelta(seconds=seconds))
+            st.subheader("Hartă")
+            st.pydeck_chart(deck)
+        else:
+            st.info("Nu există coordonate valide pentru afișarea pe hartă.")
+    except Exception as e:
+        st.warning(f"Nu s-a putut încărca harta: {e}")
 
+# ==========================================
+# Internal tests (optional) — run from the sidebar
+# ==========================================
 
-                    def format_datetime(dt_str):
-                        try:
-                            dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
-                            return dt.strftime("%Y-%m-%d %H:%M:%S")
-                        except Exception:
-                            return dt_str
+def _run_internal_tests():
+    """Basic assertions to validate key helpers and shaping logic."""
+    # safe_km
+    assert safe_km(None) == 0.0
+    assert safe_km("1000") == 1.0
+    assert safe_km(1234) == 1.234
 
+    # join_address
+    assert join_address({"street": "Str", "house_number": "10", "locality": "Cluj", "country": "RO"}) == "Str, 10, Cluj, RO"
+    assert join_address(None) == ""
 
-                    table_rows = []
-                    for t in trips_list:
-                        start = t["trip_start"]
-                        end = t["trip_end"]
-                        start_lat = start.get("latitude")
-                        start_lon = start.get("longitude")
-                        end_lat = end.get("latitude")
-                        end_lon = end.get("longitude")
+    # build_rows with REFUEL formatting
+    sample_events = [
+        {
+            "event_type": "REFUEL",
+            "event_start": "2025-09-29T07:30:24.000Z",
+            "event_end": "2025-09-29T07:30:24.000Z",
+            "duration_sec": None,
+            "fuel_level_start": 386.93,
+            "fuel_level_end": 418.52,
+            "fuel_difference": 31.59,
+            "mileage": None,
+            "location": {"latitude": 48.6, "longitude": 21.2, "address": None},
+            "driver_ids": [],
+            "id": 16,
+        },
+        {
+            "event_type": "STOP",
+            "event_start": "2025-09-29T07:03:18.000Z",
+            "event_end": "2025-09-29T07:04:39.000Z",
+            "duration_sec": 81,
+            "mileage": 3326,
+            "location": {"latitude": 47.1, "longitude": 21.87, "address": {"locality": "Oradea", "country": "Romania"}},
+            "driver_ids": [],
+            "id": 1462,
+        },
+    ]
 
-                        start_address = ", ".join(
-                            filter(None, [
-                                start["address"].get("street"),
-                                start["address"].get("house_number"),
-                                start["address"].get("locality"),
-                                start["address"].get("region"),
-                                start["address"].get("country")
-                            ])
-                        )
-                        end_address = ", ".join(
-                            filter(None, [
-                                end["address"].get("street"),
-                                end["address"].get("house_number"),
-                                end["address"].get("locality"),
-                                end["address"].get("region"),
-                                end["address"].get("country")
-                            ])
-                        )
-                        driver_id = t["driver_ids"][0] if t.get("driver_ids") else None
+    rows = build_rows(sample_events)
+    # REFUEL/DRAIN must place fuel info into Adresă
+    assert rows[0]["Adresă"] == "386.93 | 418.52 | 31.59"
+    # Mileage step (km) for None is 0.0, for 3326 m is 3.326
+    assert rows[0]["Kilometraj (pas) [km]"] == 0.0
+    assert abs(rows[1]["Kilometraj (pas) [km]"] - 3.326) < 1e-6
 
-                        # --- Find geozones containing start and end points ---
-                        start_geozones = []
-                        end_geozones = []
-                        for g in point_geozones:
-                            glat = g["circle"]["latitude"]
-                            glon = g["circle"]["longitude"]
-                            radius = g["circle"]["radius"]
-                            if start_lat is not None and start_lon is not None:
-                                if haversine(start_lat, start_lon, glat, glon) <= radius:
-                                    start_geozones.append(g.get("name"))
-                            if end_lat is not None and end_lon is not None:
-                                if haversine(end_lat, end_lon, glat, glon) <= radius:
-                                    end_geozones.append(g.get("name"))
+    df = sort_and_cumulate(pd.DataFrame(rows))
+    # Cumulative starts at 0.0 then adds subsequent steps
+    assert "Kilometraj (cumulativ) [km]" in df.columns
 
-                        row = {
-                            "Start Datetime": format_datetime(start.get("datetime")),
-                            "Start Address": start_address,
-                            "Start Latitude": start_lat,
-                            "Start Longitude": start_lon,
-                            "Start Geozones": ", ".join(start_geozones),
-                            "End Datetime": format_datetime(end.get("datetime")),
-                            "End Address": end_address,
-                            "End Latitude": end_lat,
-                            "End Longitude": end_lon,
-                            "End Geozones": ", ".join(end_geozones),
-                            "Mileage (km)": round(t.get("mileage", 0) / 1000, 3),
-                            "Fuel Consumed": t.get("total_fuel_consumption"),
-                            "Trip Duration": format_duration(t.get("trip_duration", 0)),
-                            "Driver ID": driver_id
-                        }
-                        table_rows.append(row)
+    # Additional test: DRAIN formatting and tooltip building
+    sample_events.append({
+        "event_type": "DRAIN",
+        "event_start": "2025-09-29T08:00:00.000Z",
+        "event_end": "2025-09-29T08:05:00.000Z",
+        "duration_sec": 300,
+        "fuel_level_start": 200,
+        "fuel_level_end": 150,
+        "fuel_difference": -50,
+        "mileage": 500,
+        "location": {"latitude": 46.0, "longitude": 22.0, "address": {"locality": "Arad", "country": "Romania"}},
+        "driver_ids": [],
+        "id": 999,
+    })
+    rows2 = build_rows(sample_events)
+    assert rows2[2]["Adresă"] == "200 | 150 | -50"
+    # Tooltip string contains keys
+    df2 = sort_and_cumulate(pd.DataFrame(rows2))
+    tip_html = build_tooltip_html(df2.iloc[0])
+    assert "Tip eveniment" in tip_html and "Adresă" in tip_html
 
-                    df = pd.DataFrame(table_rows)
-                    st.dataframe(df)
+    return "Toate testele au trecut."
 
-                else:
-                    st.warning("No trips found for this vehicle in the selected period.")
-            else:
-                st.error(f"Trips API error: {trips_response.status_code} - {trips_response.text}")
-        except Exception as e:
-            st.error(f"Error fetching trips: {e}")
+run_tests = st.sidebar.checkbox("Rulează testele interne")
+if run_tests:
+    try:
+        msg = _run_internal_tests()
+        st.sidebar.success(msg)
+    except AssertionError as e:
+        st.sidebar.error(f"Test eșuat: {e}")
+    except Exception as e:
+        st.sidebar.error(f"Eroare în timpul testelor: {e}")
