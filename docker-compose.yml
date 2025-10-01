@@ -1,0 +1,21 @@
+services:
+  app:
+    build: .
+    image: stationare-app:latest
+    ports:
+      - "8501:8501"
+    environment:
+      # Állítsd át igény szerint
+      FM_API_BASE: "https://api.fm-track.com"
+      # host.docker.internal -> a HOST géped 9877-es portjára mutat
+      EVENTS_BASE: "http://host.docker.internal:9877/api"
+      # Opcionális: alapértelmezett kijelzési időzóna
+      TZ: "Europe/Bucharest"
+    # Linuxon kellhet ez, hogy a host.docker.internal működjön
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
