@@ -8,7 +8,7 @@ services:
       # Állítsd át igény szerint
       FM_API_BASE: "https://api.fm-track.com"
       # host.docker.internal -> a HOST géped 9877-es portjára mutat
-      EVENTS_BASE: "http://host.docker.internal:9877/api"
+      EVENTS_BASE: "http://192.168.88.175:9877/api"
       # Opcionális: alapértelmezett kijelzési időzóna
       TZ: "Europe/Bucharest"
     # Linuxon kellhet ez, hogy a host.docker.internal működjön
