@@ -31,6 +31,13 @@ if "api_key_cache" not in st.session_state:
 
 api_key = st.sidebar.text_input("Cheie API", type="password")
 
+# User ID selector for Events API
+user_id = st.sidebar.selectbox(
+    "Utilizator (x-user-id)",
+    options=["user_1", "user_2"],
+    index=0,
+)
+
 # Date range (entered in local TZ; converted to UTC for requests)
 local_today = datetime.now(APP_TZ).date()
 from_date = st.sidebar.date_input("De la", local_today)
@@ -149,8 +156,8 @@ def fetch_vehicles(api_key: str) -> List[Dict[str, Any]]:
     return data or []
 
 
-def fetch_events(vehicle_id: str, from_dt_utc: datetime, to_dt_utc: datetime, stationary_under_min: int) -> List[Dict[str, Any]]:
-    """Fetch events from local API using selected object id as vehicle_id."""
+def fetch_events(vehicle_id: str, from_dt_utc: datetime, to_dt_utc: datetime, stationary_under_min: int, user_id: str) -> List[Dict[str, Any]]:
+    """Fetch events from local API using selected object id as vehicle_id, with x-user-id header."""
     params = {
         "vehicle_id": str(vehicle_id),
         "from": to_iso_z(from_dt_utc),
@@ -158,7 +165,8 @@ def fetch_events(vehicle_id: str, from_dt_utc: datetime, to_dt_utc: datetime, st
         "stationary_under": int(stationary_under_min),
     }
     url = f"{EVENTS_BASE}/events"
-    resp = requests.get(url, params=params, headers={"Accept": "application/json"})
+    headers = {"Accept": "application/json", "x-user-id": user_id}
+    resp = requests.get(url, params=params, headers=headers)
     data = handle_response(resp, "Eroare Events API")
     if isinstance(data, list):
         return data
@@ -254,7 +262,7 @@ if run_clicked:
     st.markdown(f"**API Call:** `{preview_url}`")
 
     with st.spinner("Se încarcă evenimentele..."):
-        events = fetch_events(str(selected_vehicle), from_utc, to_utc, stationary_under)
+        events = fetch_events(str(selected_vehicle), from_utc, to_utc, stationary_under, user_id)
 
     if not events:
         st.info("Nu există evenimente în intervalul selectat.")
