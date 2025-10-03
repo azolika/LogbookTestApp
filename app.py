@@ -71,6 +71,7 @@ def to_iso_z(dt: datetime) -> str:
 
 
 def parse_iso(dt_str: Optional[str]) -> Optional[datetime]:
+    """Parse ISO string into datetime object (UTC)."""
     if not dt_str:
         return None
     try:
@@ -80,6 +81,7 @@ def parse_iso(dt_str: Optional[str]) -> Optional[datetime]:
 
 
 def fmt_dt_local(dt_str: Optional[str]) -> Optional[str]:
+    """Format ISO string into display timezone string."""
     dt = parse_iso(dt_str)
     if not dt:
         return None
@@ -94,7 +96,6 @@ def join_address(addr: Dict[str, Any]) -> str:
         addr.get("street"),
         addr.get("house_number"),
         addr.get("locality"),
-        # prefer region, fallback to county
         addr.get("region") or addr.get("county"),
         addr.get("country"),
     ]
@@ -131,6 +132,7 @@ def get_session(api_key: str) -> requests.Session:
 
 
 def handle_response(resp: requests.Response, context: str):
+    """Validate response and parse JSON."""
     if resp.status_code == 200:
         try:
             return resp.json()
@@ -185,7 +187,7 @@ selected_vehicle = st.sidebar.selectbox(
 )
 
 # ==========================================
-# Data shaping helpers (testable) — comments in English
+# Data shaping helpers (comments in English)
 # ==========================================
 
 def build_rows(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -212,7 +214,6 @@ def build_rows(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "Lat": loc.get("latitude"),
             "Lon": loc.get("longitude"),
             "Adresă": addr,
-            # mileage comes in meters → convert to km with 3 decimals (robust to None)
             "Kilometraj (pas) [km]": safe_km(e.get("mileage")),
             "Nivel combustibil": e.get("fuel_level"),
             "ID șofer": (e.get("driver_ids") or [None])[0],
@@ -220,26 +221,6 @@ def build_rows(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         }
         rows.append(row)
     return rows
-
-
-def sort_and_cumulate(df: pd.DataFrame) -> pd.DataFrame:
-    """Sort by Start datetime, keep step mileage only (no cumulative)."""
-    def _sort_key(val: Optional[str]):
-        try:
-            return parse_iso(val) or datetime.min.replace(tzinfo=timezone.utc)
-        except Exception:
-            return datetime.min.replace(tzinfo=timezone.utc)
-
-    if df.empty:
-        return df
-
-    # Rendezés idő szerint
-    df = df.sort_values(by=["Start"], key=lambda s: s.map(_sort_key)).reset_index(drop=True)
-
-    # A kumulatív oszlop törölve → csak 'Kilometraj (pas) [km]' marad
-    return df
-
-
 
 # ==========================================
 # RUN — Fetch events and display table
@@ -271,16 +252,16 @@ if run_clicked:
         st.info("Nu există evenimente în intervalul selectat.")
         st.stop()
 
-    # Build table rows & dataframe (properly indented inside the click block)
+    # Build table rows & dataframe
     rows = build_rows(events)
     df = pd.DataFrame(rows)
-    df = sort_and_cumulate(df)
 
-    # Display table — use new Streamlit width API (no deprecation warning)
+    # Display table
     st.dataframe(df, height=800, width="stretch")
 
     # Summary footer
     total_events = len(df)
+
     # Sum durations by parsing HH:MM:SS strings
     total_seconds = 0
     for v in df["Durată"].dropna():
@@ -290,8 +271,9 @@ if run_clicked:
         except Exception:
             pass
 
-    # Összes pas km (sum)
+    # Total step km
     total_km = df["Kilometraj (pas) [km]"].sum()
+
     st.caption(
         f"Evenimente: {total_events} · "
         f"Timp total: {timedelta(seconds=total_seconds)} · "
@@ -323,8 +305,8 @@ if run_clicked:
                 "ScatterplotLayer",
                 data=df_map,
                 get_position="[Lon, Lat]",
-                get_radius=40,              # small marker (~40m)
-                radius_min_pixels=3,        # ensure visibility when zoomed out
+                get_radius=40,
+                radius_min_pixels=3,
                 radius_max_pixels=6,
                 get_fill_color=[200, 30, 0, 160],
                 get_line_color=[255, 255, 255],
@@ -350,89 +332,3 @@ if run_clicked:
             st.info("Nu există coordonate valide pentru afișarea pe hartă.")
     except Exception as e:
         st.warning(f"Nu s-a putut încărca harta: {e}")
-
-# ==========================================
-# Internal tests (optional) — run from the sidebar
-# ==========================================
-
-def _run_internal_tests():
-    """Basic assertions to validate key helpers and shaping logic."""
-    # safe_km
-    assert safe_km(None) == 0.0
-    assert safe_km("1000") == 1.0
-    assert safe_km(1234) == 1.234
-
-    # join_address
-    assert join_address({"street": "Str", "house_number": "10", "locality": "Cluj", "country": "RO"}) == "Str, 10, Cluj, RO"
-    assert join_address(None) == ""
-
-    # build_rows with REFUEL formatting
-    sample_events = [
-        {
-            "event_type": "REFUEL",
-            "event_start": "2025-09-29T07:30:24.000Z",
-            "event_end": "2025-09-29T07:30:24.000Z",
-            "duration_sec": None,
-            "fuel_level_start": 386.93,
-            "fuel_level_end": 418.52,
-            "fuel_difference": 31.59,
-            "mileage": None,
-            "location": {"latitude": 48.6, "longitude": 21.2, "address": None},
-            "driver_ids": [],
-            "id": 16,
-        },
-        {
-            "event_type": "STOP",
-            "event_start": "2025-09-29T07:03:18.000Z",
-            "event_end": "2025-09-29T07:04:39.000Z",
-            "duration_sec": 81,
-            "mileage": 3326,
-            "location": {"latitude": 47.1, "longitude": 21.87, "address": {"locality": "Oradea", "country": "Romania"}},
-            "driver_ids": [],
-            "id": 1462,
-        },
-    ]
-
-    rows = build_rows(sample_events)
-    # REFUEL/DRAIN must place fuel info into Adresă
-    assert rows[0]["Adresă"] == "386.93 | 418.52 | 31.59"
-    # Mileage step (km) for None is 0.0, for 3326 m is 3.326
-    assert rows[0]["Kilometraj (pas) [km]"] == 0.0
-    assert abs(rows[1]["Kilometraj (pas) [km]"] - 3.326) < 1e-6
-
-    df = sort_and_cumulate(pd.DataFrame(rows))
-    # Cumulative starts at 0.0 then adds subsequent steps
-    assert "Kilometraj (cumulativ) [km]" in df.columns
-
-    # Additional test: DRAIN formatting and tooltip building
-    sample_events.append({
-        "event_type": "DRAIN",
-        "event_start": "2025-09-29T08:00:00.000Z",
-        "event_end": "2025-09-29T08:05:00.000Z",
-        "duration_sec": 300,
-        "fuel_level_start": 200,
-        "fuel_level_end": 150,
-        "fuel_difference": -50,
-        "mileage": 500,
-        "location": {"latitude": 46.0, "longitude": 22.0, "address": {"locality": "Arad", "country": "Romania"}},
-        "driver_ids": [],
-        "id": 999,
-    })
-    rows2 = build_rows(sample_events)
-    assert rows2[2]["Adresă"] == "200 | 150 | -50"
-    # Tooltip string contains keys
-    df2 = sort_and_cumulate(pd.DataFrame(rows2))
-    tip_html = build_tooltip_html(df2.iloc[0])
-    assert "Tip eveniment" in tip_html and "Adresă" in tip_html
-
-    return "Toate testele au trecut."
-
-run_tests = st.sidebar.checkbox("Rulează testele interne")
-if run_tests:
-    try:
-        msg = _run_internal_tests()
-        st.sidebar.success(msg)
-    except AssertionError as e:
-        st.sidebar.error(f"Test eșuat: {e}")
-    except Exception as e:
-        st.sidebar.error(f"Eroare în timpul testelor: {e}")
