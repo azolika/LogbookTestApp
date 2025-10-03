@@ -410,8 +410,6 @@ if run_clicked:
     except Exception as e:
         st.warning(f"Nu s-a putut încărca harta: {e}")
 
-    # ===== ADD: Google Maps útvonal link generálás =====
-    # Használd a már kész df_map-ot, mert abban csak a valós koordináták vannak
     try:
         route_points: List[tuple[float, float]] = []
         if "df_map" in locals():
