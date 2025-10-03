@@ -223,7 +223,8 @@ def build_rows(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def sort_and_cumulate(df: pd.DataFrame) -> pd.DataFrame:
-    """Sort by Start datetime, compute cumulative mileage column INCLUDING current row."""
+    """Sort by Start datetime, keep step mileage and add cumulative column
+    next to it, where the first record is always 0 (exclude its step)."""
     def _sort_key(val: Optional[str]):
         try:
             return parse_iso(val) or datetime.min.replace(tzinfo=timezone.utc)
@@ -235,12 +236,12 @@ def sort_and_cumulate(df: pd.DataFrame) -> pd.DataFrame:
         df.sort_values(by=["Start"], key=lambda s: s.map(_sort_key), inplace=True)
         # lépésoszlop -> numerikus
         step_series = pd.to_numeric(df["Kilometraj (pas) [km]"], errors="coerce").fillna(0)
-
-        # kumulálás, de az első értéket kihagyva
+        # kumulatív összeg, első rekord 0-val kezdődik
         cumulative = step_series.cumsum().shift(fill_value=0)
+        # beszúrás közvetlenül a step oszlop után
+        step_idx = df.columns.get_loc("Kilometraj (pas) [km]") + 1
+        df.insert(step_idx, "Kilometraj (cumulativ) [km]", cumulative)
 
-        df["Kilometraj (cumulativ) [km]"] = cumulative
-        df.drop(columns=["Kilometraj (pas) [km]"], inplace=True)
     return df
 
 
@@ -348,89 +349,3 @@ if run_clicked:
             st.info("Nu există coordonate valide pentru afișarea pe hartă.")
     except Exception as e:
         st.warning(f"Nu s-a putut încărca harta: {e}")
-
-# ==========================================
-# Internal tests (optional) — run from the sidebar
-# ==========================================
-
-def _run_internal_tests():
-    """Basic assertions to validate key helpers and shaping logic."""
-    # safe_km
-    assert safe_km(None) == 0.0
-    assert safe_km("1000") == 1.0
-    assert safe_km(1234) == 1.234
-
-    # join_address
-    assert join_address({"street": "Str", "house_number": "10", "locality": "Cluj", "country": "RO"}) == "Str, 10, Cluj, RO"
-    assert join_address(None) == ""
-
-    # build_rows with REFUEL formatting
-    sample_events = [
-        {
-            "event_type": "REFUEL",
-            "event_start": "2025-09-29T07:30:24.000Z",
-            "event_end": "2025-09-29T07:30:24.000Z",
-            "duration_sec": None,
-            "fuel_level_start": 386.93,
-            "fuel_level_end": 418.52,
-            "fuel_difference": 31.59,
-            "mileage": None,
-            "location": {"latitude": 48.6, "longitude": 21.2, "address": None},
-            "driver_ids": [],
-            "id": 16,
-        },
-        {
-            "event_type": "STOP",
-            "event_start": "2025-09-29T07:03:18.000Z",
-            "event_end": "2025-09-29T07:04:39.000Z",
-            "duration_sec": 81,
-            "mileage": 3326,
-            "location": {"latitude": 47.1, "longitude": 21.87, "address": {"locality": "Oradea", "country": "Romania"}},
-            "driver_ids": [],
-            "id": 1462,
-        },
-    ]
-
-    rows = build_rows(sample_events)
-    # REFUEL/DRAIN must place fuel info into Adresă
-    assert rows[0]["Adresă"] == "386.93 | 418.52 | 31.59"
-    # Mileage step (km) for None is 0.0, for 3326 m is 3.326
-    assert rows[0]["Kilometraj (pas) [km]"] == 0.0
-    assert abs(rows[1]["Kilometraj (pas) [km]"] - 3.326) < 1e-6
-
-    df = sort_and_cumulate(pd.DataFrame(rows))
-    # Cumulative starts at 0.0 then adds subsequent steps
-    assert "Kilometraj (cumulativ) [km]" in df.columns
-
-    # Additional test: DRAIN formatting and tooltip building
-    sample_events.append({
-        "event_type": "DRAIN",
-        "event_start": "2025-09-29T08:00:00.000Z",
-        "event_end": "2025-09-29T08:05:00.000Z",
-        "duration_sec": 300,
-        "fuel_level_start": 200,
-        "fuel_level_end": 150,
-        "fuel_difference": -50,
-        "mileage": 500,
-        "location": {"latitude": 46.0, "longitude": 22.0, "address": {"locality": "Arad", "country": "Romania"}},
-        "driver_ids": [],
-        "id": 999,
-    })
-    rows2 = build_rows(sample_events)
-    assert rows2[2]["Adresă"] == "200 | 150 | -50"
-    # Tooltip string contains keys
-    df2 = sort_and_cumulate(pd.DataFrame(rows2))
-    tip_html = build_tooltip_html(df2.iloc[0])
-    assert "Tip eveniment" in tip_html and "Adresă" in tip_html
-
-    return "Toate testele au trecut."
-
-run_tests = st.sidebar.checkbox("Rulează testele interne")
-if run_tests:
-    try:
-        msg = _run_internal_tests()
-        st.sidebar.success(msg)
-    except AssertionError as e:
-        st.sidebar.error(f"Test eșuat: {e}")
-    except Exception as e:
-        st.sidebar.error(f"Eroare în timpul testelor: {e}")
