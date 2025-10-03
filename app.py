@@ -223,7 +223,7 @@ def build_rows(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def sort_and_cumulate(df: pd.DataFrame) -> pd.DataFrame:
-    """Sort by Start datetime and compute cumulative mileage including the first step."""
+    """Sort by Start datetime, keep step mileage only (no cumulative)."""
     def _sort_key(val: Optional[str]):
         try:
             return parse_iso(val) or datetime.min.replace(tzinfo=timezone.utc)
@@ -233,15 +233,10 @@ def sort_and_cumulate(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
 
-    # rendezés idő szerint
+    # Rendezés idő szerint
     df = df.sort_values(by=["Start"], key=lambda s: s.map(_sort_key)).reset_index(drop=True)
 
-    # mileage pas km → numeric
-    step_series = pd.to_numeric(df["Kilometraj (pas) [km]"], errors="coerce").fillna(0.0)
-
-    # cumsum az első értékkel együtt
-    df["Kilometraj (cumulativ) [km]"] = step_series.cumsum()
-
+    # A kumulatív oszlop törölve → csak 'Kilometraj (pas) [km]' marad
     return df
 
 
@@ -296,7 +291,8 @@ if run_clicked:
             pass
 
     final_km = f"{df['Kilometraj (cumulativ) [km]'].iloc[-1]:.3f}" if not df.empty else "0.000"
-    st.caption(f"Evenimente: {total_events} · Timp total: {timedelta(seconds=total_seconds)} · Kilometraj cumulativ final: {final_km} km")
+    st.caption(
+        f"Evenimente: {total_events} · Timp total: {timedelta(seconds=total_seconds)} · Kilometraj cumulativ final: {final_km} km")
 
     # ==============================
     # Map — show points with tooltips
