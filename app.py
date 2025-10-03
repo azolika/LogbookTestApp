@@ -290,9 +290,13 @@ if run_clicked:
         except Exception:
             pass
 
-    final_km = f"{df['Kilometraj (cumulativ) [km]'].iloc[-1]:.3f}" if not df.empty else "0.000"
+    # Összes pas km (sum)
+    total_km = df["Kilometraj (pas) [km]"].sum()
     st.caption(
-        f"Evenimente: {total_events} · Timp total: {timedelta(seconds=total_seconds)} · Kilometraj cumulativ final: {final_km} km")
+        f"Evenimente: {total_events} · "
+        f"Timp total: {timedelta(seconds=total_seconds)} · "
+        f"Kilometraj total (pas): {total_km:.3f} km"
+    )
 
     # ==============================
     # Map — show points with tooltips
