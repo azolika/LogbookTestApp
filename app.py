@@ -239,7 +239,7 @@ def sort_and_cumulate(df: pd.DataFrame) -> pd.DataFrame:
         cumulative = step_series.cumsum()
         # új oszlop
         df["Kilometraj (cumulativ) [km]"] = cumulative
-        df.drop(columns=["Kilometraj (pas) [km]"], inplace=True)
+        #df.drop(columns=["Kilometraj (pas) [km]"], inplace=True)
 
     return df
 
