@@ -236,13 +236,18 @@ def sort_and_cumulate(df: pd.DataFrame) -> pd.DataFrame:
         df.sort_values(by=["Start"], key=lambda s: s.map(_sort_key), inplace=True)
         # lépésoszlop -> numerikus
         step_series = pd.to_numeric(df["Kilometraj (pas) [km]"], errors="coerce").fillna(0)
-        # kumulatív összeg, első rekord 0-val kezdődik
-        cumulative = step_series.cumsum().shift(fill_value=0)
+
+        # Kumulatív: az első 0, a továbbiak halmozása az előző kumulativ érték + előző step
+        cumulative = [0]
+        for i in range(1, len(step_series)):
+            cumulative.append(cumulative[i-1] + step_series[i])
+
         # beszúrás közvetlenül a step oszlop után
         step_idx = df.columns.get_loc("Kilometraj (pas) [km]") + 1
         df.insert(step_idx, "Kilometraj (cumulativ) [km]", cumulative)
 
     return df
+
 
 
 # ==========================================
