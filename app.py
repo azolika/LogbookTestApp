@@ -223,25 +223,27 @@ def build_rows(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def sort_and_cumulate(df: pd.DataFrame) -> pd.DataFrame:
-    """Sort by Start datetime, compute cumulative mileage column INCLUDING current row."""
+    """Sort by Start datetime and compute cumulative mileage including the first step."""
     def _sort_key(val: Optional[str]):
         try:
             return parse_iso(val) or datetime.min.replace(tzinfo=timezone.utc)
         except Exception:
             return datetime.min.replace(tzinfo=timezone.utc)
 
-    if not df.empty:
+    if df.empty:
+        return df
 
-        df.sort_values(by=["Start"], key=lambda s: s.map(_sort_key), inplace=True)
+    # rendezés idő szerint
+    df = df.sort_values(by=["Start"], key=lambda s: s.map(_sort_key)).reset_index(drop=True)
 
-        step_series = pd.to_numeric(df["Kilometraj (pas) [km]"], errors="coerce").fillna(0)
+    # mileage pas km → numeric
+    step_series = pd.to_numeric(df["Kilometraj (pas) [km]"], errors="coerce").fillna(0.0)
 
-        cumulative = step_series.cumsum()
-
-        df["Kilometraj (cumulativ) [km]"] = cumulative
-        #df.drop(columns=["Kilometraj (pas) [km]"], inplace=True)
+    # cumsum az első értékkel együtt
+    df["Kilometraj (cumulativ) [km]"] = step_series.cumsum()
 
     return df
+
 
 
 # ==========================================
