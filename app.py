@@ -236,7 +236,7 @@ def sort_and_cumulate(df: pd.DataFrame) -> pd.DataFrame:
         # lépésoszlop -> numerikus
         step_series = pd.to_numeric(df["Kilometraj (pas) [km]"], errors="coerce").fillna(0)
         # kumulatív összeg (aktuális értéket IS tartalmazza)
-        cumulative = step_series.cumsum().shift(fill_value=0)
+        cumulative = step_series.cumsum()
         # új oszlop
         df["Kilometraj (cumulativ) [km]"] = cumulative
         df.drop(columns=["Kilometraj (pas) [km]"], inplace=True)
