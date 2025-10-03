@@ -1,5 +1,3 @@
-import math
-import os
 import html
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -150,6 +148,7 @@ def fetch_vehicles(api_key: str) -> List[Dict[str, Any]]:
     s = get_session(api_key)
     url = f"{FM_API_BASE}/objects"
     resp = s.get(url)
+    st.markdown(f"**API Call:** `{resp.url}`")
     data = handle_response(resp, "Eroare Vehicule API")
     if isinstance(data, list):
         return data
@@ -177,7 +176,14 @@ def fetch_events(vehicle_id: str, from_dt_utc: datetime, to_dt_utc: datetime, st
 # ==========================================
 
 vehicles_list: List[Dict[str, Any]] = fetch_vehicles(api_key) if api_key else []
-vehicle_options = {v.get("id"): v.get("name", v.get("id")) for v in vehicles_list}
+vehicle_options = {}
+for v in vehicles_list:
+    vid = v.get("id")
+    name = v.get("name", vid)
+    make = v.get("vehicle_params", {}).get("make")
+    display_name = f"{name} – {make}" if make else name
+    vehicle_options[vid] = display_name
+
 selected_vehicle = st.sidebar.selectbox(
     "Selectează vehicul",
     options=list(vehicle_options.keys()) if vehicle_options else [None],
@@ -261,6 +267,15 @@ if run_clicked:
     if not selected_vehicle:
         st.warning("Selectează un vehicul pentru a rula.")
         st.stop()
+
+        # ==========================
+        # Show vehicle info (MAKE / MODEL)
+        # ==========================
+    vehicle_info = next((v for v in vehicles_list if v.get("id") == selected_vehicle), None)
+    if vehicle_info:
+            params = vehicle_info.get("vehicle_params", {})
+            make = params.get("make", "N/A")
+            st.markdown(f"**Vehicul selectat:** {make or ''} ({vehicle_options.get(selected_vehicle)})")
 
     # Build UTC bounds from local dates (00:00 to 23:59:00 local)
     start_local = datetime.combine(from_date, datetime.min.time()).replace(tzinfo=display_tz)
