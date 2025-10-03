@@ -116,6 +116,45 @@ def build_tooltip_html(row: pd.Series) -> str:
         parts.append(f"<b>{key}</b>: {val}")
     return "<br/>".join(parts)
 
+# ===== ADD: imports (felül, a többi import mellé) =====
+from urllib.parse import quote_plus
+
+# ===== ADD: helper a Google Maps directions URL-hez =====
+def build_gmaps_directions_url(points: List[tuple[float, float]]) -> Optional[str]:
+    """
+    Build a Google Maps Directions URL (api=1) from a list of (lat, lon) points.
+    points[0]   -> origin
+    points[-1]  -> destination
+    points[1:-1]-> waypoints (| delimited)
+    Returns a URL string or None if <2 points.
+    """
+    if not points or len(points) < 2:
+        return None
+
+    def fmt(p):
+        # Ensure "lat,lon" with dot decimals
+        lat, lon = p
+        return f"{lat:.6f},{lon:.6f}"
+
+    origin = fmt(points[0])
+    destination = fmt(points[-1])
+    waypoints_list = [fmt(p) for p in points[1:-1]]
+
+    base = "https://www.google.com/maps/dir/?api=1"
+    params = [
+        ("origin", origin),
+        ("destination", destination),
+        ("travelmode", "driving"),
+    ]
+    if waypoints_list:
+        # '|' separated; quote_plus will % encode the pipe
+        params.append(("waypoints", "|".join(waypoints_list)))
+
+    # Manual query assembly to keep order
+    query = "&".join(f"{k}={quote_plus(v)}" for k, v in params)
+    return f"{base}&{query}"
+
+
 # ==========================================
 # Networking (comments in English)
 # ==========================================
@@ -317,6 +356,7 @@ if run_clicked:
     final_km = f"{df['Kilometraj (cumulativ) [km]'].iloc[-1]:.3f}" if not df.empty else "0.000"
     st.caption(f"Evenimente: {total_events} · Timp total: {timedelta(seconds=total_seconds)} · Kilometraj cumulativ final: {final_km} km")
 
+
     # ==============================
     # Map — show points with tooltips
     # ==============================
@@ -369,3 +409,28 @@ if run_clicked:
             st.info("Nu există coordonate valide pentru afișarea pe hartă.")
     except Exception as e:
         st.warning(f"Nu s-a putut încărca harta: {e}")
+
+    # ===== ADD: Google Maps útvonal link generálás =====
+    # Használd a már kész df_map-ot, mert abban csak a valós koordináták vannak
+    try:
+        route_points: List[tuple[float, float]] = []
+        if "df_map" in locals():
+            if not df_map.empty:
+                route_points = list(zip(df_map["Lat"].astype(float), df_map["Lon"].astype(float)))
+        else:
+            # Fallback: df-ből, ha df_map nincs
+            _tmp = df.copy()
+            _tmp = _tmp[pd.notnull(_tmp["Lat"]) & pd.notnull(_tmp["Lon"])]
+            if not _tmp.empty:
+                route_points = list(zip(_tmp["Lat"].astype(float), _tmp["Lon"].astype(float)))
+
+        gmaps_url = build_gmaps_directions_url(route_points)
+        st.subheader("Google Maps — ruta din tabel")
+        if gmaps_url:
+            st.markdown(f"[Deschide ruta în Google Maps]({gmaps_url})")
+            with st.expander("Arată URL complet"):
+                st.code(gmaps_url, language="text")
+        else:
+            st.info("Pentru generarea rutei sunt necesare cel puțin 2 puncte valide (Lat/Lon).")
+    except Exception as e:
+        st.warning(f"Nu s-a putut genera linkul Google Maps: {e}")
